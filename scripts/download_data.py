@@ -21,33 +21,42 @@ def main(args):
     if args.subset=="the-pile":
         for split in args.split.split(","):
             assert split in ["train", "val", "test"], split
-            download_the_pile(split)
+            download_the_pile(split, args.force_redownload)
     elif args.subset=="cc-news":
-        download_cc_news()
+        download_cc_news(args.force_redownload)
     elif args.subset=="MIMIC_III":
-        download_mimic()
+        download_mimic(args.force_redownload)
     elif args.subset=="amazon":
-        download_amazon()
+        download_amazon(args.force_redownload)
     else:
         raise NotImplementedError()
 
-def download_the_pile(split):
+def download_the_pile(split, force_redownload=True):
 
     if not os.path.isdir(os.path.join(DATA_DIR, "the-pile")):
         os.mkdir(os.path.join(DATA_DIR, "the-pile"))
 
     if split in ["val", "test"]:
+        subset_to_id = {
+            "val": "1oUFe3ul-Oah50pMgF8fW6hAT4qrp04cj",
+            "test": "1HuXhNG_3rivExolnKCTuzzMzX67ul3ys",
+        }
         command = "wget -O data/the-pile/{}.jsonl.zst https://the-eye.eu/public/AI/pile/{}.jsonl.zst".format(split, split)
-        ret_code = subprocess.run([command],
-                                shell=True,
-                                #stdout=subprocess.DEVNULL,
-                                # #stderr=subprocess.STDOUT
-                                )
-        if ret_code.returncode != 0:
-            print("Failed to download the data")
-            exit()
+        filename = os.path.join(DATA_DIR, "the-pile", f"{split}.jsonl.zst")
+        if not (os.path.exists(filename) and os.path.isfile(filename)) or force_redownload:
+            ret_code = subprocess.run([command],
+                                    shell=True,
+                                    #stdout=subprocess.DEVNULL,
+                                    # #stderr=subprocess.STDOUT
+                                    )
+            if ret_code.returncode != 0:
+                print("Failed to download the data, try to use google drive...")
+                os.remove(f"data/the-pile/{split}.jsonl.zst")
+                download_gdrive_file(subset_to_id[split], filename)
+            else:
+                print("Successfully downloaded the data")
         else:
-            print("Successfully downloaded the data")
+            print(f"Skip file {filename}, it already exists, if neeed re-downloading, specify `force_redownload`")
 
     elif split=="train":
         subset_to_id = {
@@ -58,21 +67,25 @@ def download_the_pile(split):
             "Wikipedia_\(en\)": "1WRyuCaXkYDV8JlJ2JjWQLcIok7WY1IKA"
         }
 
-        for subset, _id in subset_to_id.items():
-            target_file = os.path.join(DATA_DIR, "the-pile", "train-gz", f"{subset}.tar.gz")
-            download_gdrive_file(_id, target_file)
-            command = "tar -vxzf %s -C %s; rm %s" % (target_file, os.path.join(DATA_DIR, "the-pile", "train-gz"), target_file)
-            ret_code = subprocess.run([command], shell=True)
-            if ret_code.returncode != 0:
-                print(f"Failed to download the {subset} data")
-                exit()
-            else:
-                print(f"Successfully downloaded the {subset} data")
+        dirname = os.path.join(DATA_DIR, "the-pile", "train-gz")
+        if not (os.path.exists(dirname) and os.path.isdir(dirname)) or force_redownload:
+            for subset, _id in subset_to_id.items():
+                target_file = os.path.join(DATA_DIR, "the-pile", "train-gz", f"{subset}.tar.gz")
+                download_gdrive_file(_id, target_file)
+                command = "tar -vxzf %s -C %s; rm %s" % (target_file, os.path.join(DATA_DIR, "the-pile", "train-gz"), target_file)
+                ret_code = subprocess.run([command], shell=True)
+                if ret_code.returncode != 0:
+                    print(f"Failed to download the {subset} data")
+                    exit()
+                else:
+                    print(f"Successfully downloaded the {subset} data")
+        else:
+            print(f"Skip file {target_file}, it already exists, if neeed re-downloading, specify `force_redownload`")
 
     else:
         raise NotImplementedError()
 
-def download_amazon():
+def download_amazon(force_redownload=True):
     try:
         orig_data_dir = os.path.join(DATA_DIR, "raw_amazon")
         data_dir = os.path.join(DATA_DIR, "amazon")
@@ -100,35 +113,34 @@ def download_amazon():
         train_path = os.path.join(data_dir, "train.jsonl")
         val_path = os.path.join(data_dir, "val.jsonl")
         test_path = os.path.join(data_dir, "test.jsonl")
+            
+        need_download = force_redownload
+        need_download = need_download or any([not (os.path.exists(f) and os.path.isfile(f)) for f in [train_path, val_path, test_path]])
 
-        if os.path.exists(train_path):
-            os.remove(train_path)
-        if os.path.exists(val_path):
-            os.remove(val_path)
-        if os.path.exists(test_path):
-            os.remove(test_path)
+        if need_download:
+            for fn in tqdm(sorted(os.listdir(orig_data_dir))):
+                lines = []
 
-        for fn in tqdm(sorted(os.listdir(orig_data_dir))):
-            lines = []
+                # cut at 1M lines
+                with open(os.path.join(orig_data_dir, fn)) as f:
+                    for line in f:
+                        lines.append(line)
+                        if len(lines)==500000:
+                            break
 
-            # cut at 1M lines
-            with open(os.path.join(orig_data_dir, fn)) as f:
-                for line in f:
-                    lines.append(line)
-                    if len(lines)==500000:
-                        break
-
-            # 1% as val, 1% as test, 98% as train
-            val_size = len(lines) // 100
-            with open(val_path, "a+") as f:
-                for line in lines[:val_size]:
-                    f.write(line)
-            with open(test_path, "a+") as f:
-                for line in lines[val_size:2*val_size]:
-                    f.write(line)
-            with open(train_path, "a+") as f:
-                for line in lines[2*val_size:]:
-                    f.write(line)
+                # 1% as val, 1% as test, 98% as train
+                val_size = len(lines) // 100
+                with open(val_path, "a+") as f:
+                    for line in lines[:val_size]:
+                        f.write(line)
+                with open(test_path, "a+") as f:
+                    for line in lines[val_size:2*val_size]:
+                        f.write(line)
+                with open(train_path, "a+") as f:
+                    for line in lines[2*val_size:]:
+                        f.write(line)
+        else:
+            print("Skip downloading Amazon corpus, it already exists, if neeed re-downloading, specify `force_redownload`")
     except Exception:
         """For some reason, amazon corpus in Huggingface does not work anymore, so added a way to
         download from Google Drive"""
@@ -156,7 +168,10 @@ def process_data(config, data_dir):
             f.write(json.dumps({"text": text})+"\n")
     return n_tokens
 
-def download_mimic():
+def download_mimic(force_redownload=True):
+    if not force_redownload:
+        print("Warning: we always re-download MIMIC_III.")
+        force_redownload = True
     in_file = os.path.join(DATA_DIR, "NOTEEVENTS.csv")
     assert os.path.join(in_file), in_file
 
@@ -199,7 +214,10 @@ def download_mimic():
         for text in texts[2*val_size:]:
             f.write(json.dumps({"text": text})+"\n")
 
-def download_cc_news():
+def download_cc_news(force_redownload=True):
+    if not force_redownload:
+        print("Warning: we always re-download cc-news.")
+        force_redownload = True
     cc_news = load_dataset('cc_news', split="train")
 
     paragraphs = []
@@ -270,6 +288,9 @@ if __name__=='__main__':
     parser.add_argument("--split",
                         type=str,
                         default="train,val,test")
+    parser.add_argument("--force_redownload",
+                        type=int,
+                        default=1)
 
 
     args = parser.parse_args()
